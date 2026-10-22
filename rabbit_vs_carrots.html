@@ -1,0 +1,414 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>당근 피하기 게임</title>
+    <style>
+        * { box-sizing: border-box; }
+        body {
+            margin: 0; padding: 0;
+            background-color: #222;
+            display: flex; justify-content: center; align-items: center;
+            height: 100vh; touch-action: none;
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            overflow: hidden;
+        }
+        #game-container {
+            position: relative;
+            width: 100%; max-width: 390px; height: 100%; max-height: 850px;
+            background-color: #87CEEB; /* 하늘색 배경 */
+            display: flex; flex-direction: column;
+            overflow: hidden; box-shadow: 0 0 20px rgba(0,0,0,0.5);
+        }
+        #ui-header {
+            display: flex; justify-content: space-between; align-items: center;
+            padding: 10px 20px; background: rgba(0,0,0,0.3); color: white;
+            font-size: 24px; font-weight: bold; position: absolute;
+            top: 0; left: 0; width: 100%; z-index: 10;
+        }
+        canvas {
+            flex: 1; display: block; width: 100%; touch-action: none;
+        }
+        #controls {
+            display: flex; height: 80px; background: #333; width: 100%;
+            z-index: 10;
+        }
+        .control-btn {
+            flex: 1; border: 1px solid #444; background: #555;
+            color: white; font-size: 30px; display: flex;
+            justify-content: center; align-items: center;
+            user-select: none; cursor: pointer;
+        }
+        .control-btn:active { background: #777; }
+        
+        .overlay {
+            position: absolute; top: 0; left: 0; width: 100%; height: 100%;
+            background: rgba(0,0,0,0.85); color: white;
+            display: flex; flex-direction: column; justify-content: center; align-items: center;
+            z-index: 20; text-align: center;
+        }
+        .overlay.hidden { display: none; }
+        
+        #poster { max-width: 80%; max-height: 40%; margin-bottom: 20px; object-fit: contain; }
+        button.action-btn {
+            padding: 15px 30px; font-size: 24px; font-weight: bold;
+            background: #ffaa00; border: none; border-radius: 10px;
+            color: white; cursor: pointer; box-shadow: 0 4px 6px rgba(0,0,0,0.3);
+            margin-top: 20px;
+        }
+        button.action-btn:active { transform: translateY(2px); box-shadow: none; }
+        
+        #mute-btn { font-size: 16px; cursor: pointer; background: #555; padding: 5px 10px; border-radius: 5px; }
+        #ending-video {
+            position: absolute; top: 0; left: 0; width: 100%; height: 100%;
+            object-fit: cover; z-index: 30; display: none; background: black;
+        }
+    </style>
+</head>
+<body>
+
+<div id="game-container">
+    <div id="ui-header">
+        <div>❤️ <span id="lives-display">5</span></div>
+        <div>점수: <span id="score-display">0</span></div>
+        <div id="mute-btn">🎵 끄기</div>
+    </div>
+    
+    <canvas id="gameCanvas"></canvas>
+    
+    <div id="controls">
+        <div class="control-btn" id="btn-left">⬅️</div>
+        <div class="control-btn" id="btn-right">➡️</div>
+    </div>
+
+    <!-- 시작 화면 -->
+    <div id="start-screen" class="overlay">
+        <img id="poster" src="poster.png" alt="게임 포스터" onerror="this.style.display='none';">
+        <h1 style="margin:0; font-size: 32px; color:#ffaa00;">당근 피하기</h1>
+        <p>300점을 달성하세요!<br>(방향키, 하단 버튼, 화면 터치)</p>
+        <button id="start-btn" class="action-btn">게임 시작</button>
+    </div>
+
+    <!-- 게임 오버 / 클리어 화면 -->
+    <div id="end-screen" class="overlay hidden">
+        <h1 id="end-title" style="font-size: 40px; margin: 0;"></h1>
+        <p id="end-desc" style="font-size: 20px;"></p>
+        <button id="restart-btn" class="action-btn">다시 하기</button>
+    </div>
+
+    <!-- 엔딩 비디오 -->
+    <video id="ending-video" src="ending.mp4" playsinline></video>
+</div>
+
+<script>
+    // Elements
+    const canvas = document.getElementById('gameCanvas');
+    const ctx = canvas.getContext('2d');
+    const scoreDisplay = document.getElementById('score-display');
+    const livesDisplay = document.getElementById('lives-display');
+    const startScreen = document.getElementById('start-screen');
+    const endScreen = document.getElementById('end-screen');
+    const startBtn = document.getElementById('start-btn');
+    const restartBtn = document.getElementById('restart-btn');
+    const endTitle = document.getElementById('end-title');
+    const endDesc = document.getElementById('end-desc');
+    const muteBtn = document.getElementById('mute-btn');
+    const btnLeft = document.getElementById('btn-left');
+    const btnRight = document.getElementById('btn-right');
+    const endingVideo = document.getElementById('ending-video');
+
+    // Audio setup
+    const bgm = new Audio('music.mp3');
+    bgm.loop = true;
+    let isMuted = false;
+
+    // Game Variables
+    let gameLoopId;
+    let lastTime = 0;
+    let gameState = 'start'; // start, playing, ended
+    
+    let score = 0;
+    let lives = 5;
+    let invincibleTimer = 0;
+    
+    const TARGET_SCORE = 300;
+    
+    // Player
+    const player = {
+        x: 0, y: 0, width: 40, height: 50, speed: 250,
+        vx: 0
+    };
+    
+    // Obstacles
+    let carrots = [];
+    let carrotSpawnTimer = 0;
+    
+    // Input state
+    const keys = { left: false, right: false };
+    const buttons = { left: false, right: false };
+    
+    function resize() {
+        canvas.width = canvas.parentElement.clientWidth;
+        // controls height is 80, header is overlaid
+        canvas.height = canvas.parentElement.clientHeight - 80; 
+        if(gameState === 'start' || gameState === 'ended') {
+            player.x = canvas.width / 2;
+            player.y = canvas.height - player.height - 10;
+        }
+    }
+    window.addEventListener('resize', resize);
+
+    // --- Input Handling ---
+    window.addEventListener('keydown', (e) => {
+        if(e.key === 'ArrowLeft') keys.left = true;
+        if(e.key === 'ArrowRight') keys.right = true;
+    });
+    window.addEventListener('keyup', (e) => {
+        if(e.key === 'ArrowLeft') keys.left = false;
+        if(e.key === 'ArrowRight') keys.right = false;
+    });
+
+    const bindBtn = (el, dir) => {
+        const press = (e) => { e.preventDefault(); buttons[dir] = true; };
+        const release = (e) => { e.preventDefault(); buttons[dir] = false; };
+        el.addEventListener('mousedown', press);
+        el.addEventListener('touchstart', press, {passive: false});
+        el.addEventListener('mouseup', release);
+        el.addEventListener('mouseleave', release);
+        el.addEventListener('touchend', release);
+    };
+    bindBtn(btnLeft, 'left');
+    bindBtn(btnRight, 'right');
+
+    // Drag on canvas
+    let isDragging = false;
+    const updateDrag = (clientX) => {
+        const rect = canvas.getBoundingClientRect();
+        player.x = clientX - rect.left;
+    };
+    canvas.addEventListener('mousedown', (e) => { isDragging = true; updateDrag(e.clientX); });
+    canvas.addEventListener('mousemove', (e) => { if(isDragging) updateDrag(e.clientX); });
+    window.addEventListener('mouseup', () => { isDragging = false; });
+    
+    canvas.addEventListener('touchstart', (e) => { isDragging = true; updateDrag(e.touches[0].clientX); }, {passive: true});
+    canvas.addEventListener('touchmove', (e) => { if(isDragging) updateDrag(e.touches[0].clientX); }, {passive: true});
+    window.addEventListener('touchend', () => { isDragging = false; });
+
+    // --- Drawing functions ---
+    function drawRabbit(x, y, w, h, isInvincible) {
+        if (isInvincible && Math.floor(Date.now() / 100) % 2 === 0) return; // Blinking
+        
+        ctx.fillStyle = 'white';
+        // Body
+        ctx.beginPath();
+        ctx.ellipse(x, y - h/2, w/2, h/2, 0, 0, Math.PI * 2);
+        ctx.fill();
+        // Ears
+        ctx.beginPath();
+        ctx.ellipse(x - w/4, y - h - 10, 8, 20, -0.2, 0, Math.PI * 2);
+        ctx.ellipse(x + w/4, y - h - 10, 8, 20, 0.2, 0, Math.PI * 2);
+        ctx.fill();
+        // Eyes
+        ctx.fillStyle = 'black';
+        ctx.beginPath();
+        ctx.arc(x - 8, y - h/2 - 5, 3, 0, Math.PI * 2);
+        ctx.arc(x + 8, y - h/2 - 5, 3, 0, Math.PI * 2);
+        ctx.fill();
+    }
+
+    function drawCarrot(x, y, r) {
+        // Orange body
+        ctx.fillStyle = '#ff8800';
+        ctx.beginPath();
+        ctx.moveTo(x, y + r);
+        ctx.lineTo(x - r/2, y - r);
+        ctx.lineTo(x + r/2, y - r);
+        ctx.fill();
+        // Green top
+        ctx.fillStyle = '#00aa00';
+        ctx.beginPath();
+        ctx.arc(x, y - r, r/2, Math.PI, 0);
+        ctx.fill();
+    }
+
+    // --- Game Logic ---
+    function spawnCarrot() {
+        const radius = 15;
+        const x = radius + Math.random() * (canvas.width - radius * 2);
+        carrots.push({ x: x, y: -20, radius: radius, speed: 100 + Math.random() * 80 });
+    }
+
+    function update(dt) {
+        if (gameState !== 'playing') return;
+
+        // Player movement (keyboard & buttons)
+        if (!isDragging) {
+            let moveDir = 0;
+            if (keys.left || buttons.left) moveDir -= 1;
+            if (keys.right || buttons.right) moveDir += 1;
+            player.x += moveDir * player.speed * dt;
+        }
+
+        // Clamp player position
+        player.x = Math.max(player.width/2, Math.min(canvas.width - player.width/2, player.x));
+        player.y = canvas.height - 10;
+
+        // Score
+        score += 20 * dt;
+        if (score >= TARGET_SCORE) {
+            winGame();
+            return;
+        }
+
+        // Invincibility
+        if (invincibleTimer > 0) invincibleTimer -= dt;
+
+        // Spawning carrots (Easy difficulty)
+        carrotSpawnTimer -= dt;
+        if (carrotSpawnTimer <= 0) {
+            spawnCarrot();
+            carrotSpawnTimer = 0.6; // spawn every 0.6s
+        }
+
+        // Update carrots & check collisions
+        for (let i = carrots.length - 1; i >= 0; i--) {
+            let c = carrots[i];
+            c.y += c.speed * dt;
+
+            // Collision (generous hitbox: smaller than visuals)
+            if (invincibleTimer <= 0) {
+                const hitDistX = Math.abs(c.x - player.x);
+                const hitDistY = Math.abs(c.y - (player.y - player.height/2));
+                if (hitDistX < (player.width/2 + c.radius) * 0.6 && hitDistY < (player.height/2 + c.radius) * 0.6) {
+                    // Hit
+                    lives--;
+                    invincibleTimer = 1.5;
+                    updateUI();
+                    if (lives <= 0) {
+                        loseGame();
+                        return;
+                    }
+                }
+            }
+
+            // Remove off-screen
+            if (c.y > canvas.height + 50) {
+                carrots.splice(i, 1);
+            }
+        }
+        
+        updateUI();
+    }
+
+    function draw() {
+        ctx.clearRect(0, 0, canvas.width, canvas.height);
+        
+        // Draw ground
+        ctx.fillStyle = '#654321';
+        ctx.fillRect(0, canvas.height - 10, canvas.width, 10);
+
+        carrots.forEach(c => drawCarrot(c.x, c.y, c.radius));
+        drawRabbit(player.x, player.y, player.width, player.height, invincibleTimer > 0);
+    }
+
+    function loop(timestamp) {
+        const dt = (timestamp - lastTime) / 1000;
+        lastTime = timestamp;
+        
+        if (dt < 0.1) { // cap delta time
+            update(dt);
+        }
+        draw();
+        
+        if(gameState === 'playing') {
+            gameLoopId = requestAnimationFrame(loop);
+        }
+    }
+
+    // --- State Management ---
+    function updateUI() {
+        scoreDisplay.innerText = Math.floor(score);
+        livesDisplay.innerText = lives;
+    }
+
+    function startGame() {
+        startScreen.classList.add('hidden');
+        endScreen.classList.add('hidden');
+        endingVideo.style.display = 'none';
+        
+        resize();
+        score = 0;
+        lives = 5;
+        invincibleTimer = 0;
+        carrots = [];
+        carrotSpawnTimer = 0;
+        gameState = 'playing';
+        updateUI();
+        
+        // Audio play (graceful fail)
+        if(!isMuted) {
+            bgm.currentTime = 0;
+            bgm.play().catch(e => console.log('Audio autoplay blocked or file missing.', e));
+        }
+
+        lastTime = performance.now();
+        gameLoopId = requestAnimationFrame(loop);
+    }
+
+    function stopGame() {
+        gameState = 'ended';
+        cancelAnimationFrame(gameLoopId);
+        bgm.pause();
+    }
+
+    function loseGame() {
+        stopGame();
+        endTitle.innerText = "게임 오버!";
+        endTitle.style.color = "#ff4444";
+        endDesc.innerText = `최종 점수: ${Math.floor(score)}점`;
+        endScreen.classList.remove('hidden');
+    }
+
+    function winGame() {
+        stopGame();
+        score = TARGET_SCORE;
+        updateUI();
+        
+        // Try playing ending video
+        endingVideo.style.display = 'block';
+        
+        const showWinScreen = () => {
+            endingVideo.style.display = 'none';
+            endTitle.innerText = "클리어!";
+            endTitle.style.color = "#44ff44";
+            endDesc.innerText = "축하합니다! 토끼가 안전합니다.";
+            endScreen.classList.remove('hidden');
+        };
+
+        endingVideo.play().then(() => {
+            endingVideo.onended = showWinScreen;
+        }).catch(e => {
+            console.log('Video play failed or missing.', e);
+            showWinScreen(); // Fallback to win screen immediately
+        });
+        
+        endingVideo.onerror = showWinScreen;
+    }
+
+    // UI Bindings
+    startBtn.addEventListener('click', startGame);
+    restartBtn.addEventListener('click', startGame);
+    muteBtn.addEventListener('click', () => {
+        isMuted = !isMuted;
+        bgm.muted = isMuted;
+        muteBtn.innerText = isMuted ? "🎵 켜기" : "🎵 끄기";
+        if(!isMuted && gameState === 'playing') bgm.play().catch(()=>{});
+    });
+
+    // Init
+    resize();
+    draw(); // initial draw
+</script>
+</body>
+</html>
